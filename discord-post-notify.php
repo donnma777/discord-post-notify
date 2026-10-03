@@ -4,6 +4,7 @@
  * Description: 新規投稿の公開・Contact Form 7の送信・コメント投稿時にDiscordのWebhookへ通知を送信します。
  * Version: 2.0.0
  * Author: donnma
+ * Author URI: https://donnma.com/
  * Plugin URI: https://github.com/donnma777/discord-post-notify
  * License: GPLv2 or later
  * Requires PHP: 7.4
@@ -40,6 +41,17 @@ function dpn_discord_add_settings_page() {
 	);
 }
 add_action( 'admin_menu', 'dpn_discord_add_settings_page' );
+
+/**
+ * プラグイン一覧に「設定」のリンクを出す。
+ */
+function dpn_discord_action_links( $links ) {
+	if ( current_user_can( 'manage_options' ) ) {
+		array_unshift( $links, '<a href="' . esc_url( admin_url( 'options-general.php?page=discord-post-notify' ) ) . '">設定</a>' );
+	}
+	return $links;
+}
+add_filter( 'plugin_action_links_' . plugin_basename( __FILE__ ), 'dpn_discord_action_links' );
 
 /**
  * 改行区切りで複数のWebhook URLを保存するためのサニタイズ処理。
