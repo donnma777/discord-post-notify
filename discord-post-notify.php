@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Discord Post Notify
- * Description: 新規投稿の公開・Contact Form 7の送信・コメント投稿時にDiscordのWebhookへ通知を送信します。
- * Version: 2.0.0
+ * Description: 新規投稿の公開・フォームの送信・コメント投稿時にDiscordのWebhookへ通知を送信します。
+ * Version: 3.0.0
  * Author: donnma
  * Author URI: https://donnma.com/
  * Plugin URI: https://github.com/donnma777/discord-post-notify
@@ -16,9 +16,13 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 define( 'DPN_DISCORD_OPTION_KEY', 'dpn_discord_webhook_url' );
 
+// 記事の公開から通知を送るまでの秒数(WP-Cron なので、この時間のあとの最初のアクセスで送られる)
+define( 'DPN_PUBLISH_NOTICE_DELAY', 60 );
+
 /**
  * 用途ごとのWebhook URLオプションキー。
  * 各項目は複数URL(改行区切り)を保持でき、空であれば DPN_DISCORD_OPTION_KEY(デフォルト)にフォールバックする。
+ * 'cf7' はフォームの送信に使う(Contact Form 7 用だったころの設定を引き継ぐため名前はそのまま)。
  */
 function dpn_discord_channel_option_keys() {
 	return array(
@@ -113,13 +117,13 @@ function dpn_discord_render_settings_page() {
 
 	$channel_labels = array(
 		'post'    => '新規投稿公開',
-		'cf7'     => 'お問い合わせフォーム送信',
+		'cf7'     => 'フォーム送信',
 		'comment' => 'コメント投稿',
 	);
 	?>
 	<div class="wrap">
 		<h1>Discord通知設定</h1>
-		<p>新規投稿の公開時、Contact Form 7の送信時、コメント投稿時に通知を送るDiscordのWebhook URLを設定します。<br />
+		<p>新規投稿の公開時、フォームの送信時、コメント投稿時に通知を送るDiscordのWebhook URLを設定します。<br />
 		1行に1つずつ入力すると、複数のDiscordサーバー/チャンネルへ同時に通知できます。<br />
 		用途別URLを空欄にすると、その用途はデフォルトURLへ通知されます。</p>
 		<form method="post" action="options.php">
@@ -261,53 +265,65 @@ function dpn_notify_discord_on_publish( $new_status, $old_status, $post ) {
 		return;
 	}
 
+	// 公開の処理の途中ではアイキャッチやSEOの設定がまだ保存されておらず、
+	// Discordがそのときのページを読むとカードが出ない(しかもURLごとに覚えられる)。
+	// 少し待ってから WP-Cron で送る。
+	if ( ! wp_next_scheduled( 'dpn_send_publish_notice', array( $post->ID ) ) ) {
+		wp_schedule_single_event( time() + DPN_PUBLISH_NOTICE_DELAY, 'dpn_send_publish_notice', array( $post->ID ) );
+	}
+}
+add_action( 'transition_post_status', 'dpn_notify_discord_on_publish', 10, 3 );
+
+/**
+ * 公開から DPN_PUBLISH_NOTICE_DELAY 秒後に、記事の公開をDiscordへ通知する。
+ */
+function dpn_send_publish_notice( $post_id ) {
+	$post = get_post( $post_id );
+	// 待っている間に非公開・下書きに戻された記事は送らない
+	if ( ! $post || $post->post_status !== 'publish' ) {
+		return;
+	}
+
 	$title = get_the_title( $post );
 	$url   = get_permalink( $post );
 
 	dpn_discord_send_message( sprintf( "新しい記事が公開されました！\n**%s**\n%s", $title, $url ), 'post' );
 }
-add_action( 'transition_post_status', 'dpn_notify_discord_on_publish', 10, 3 );
+add_action( 'dpn_send_publish_notice', 'dpn_send_publish_notice' );
 
 /**
- * Contact Form 7 の送信完了時にDiscordへ通知する。
- * メールが正常に送信された場合のみ発火する(スパム判定等で失敗した場合は送らない)。
+ * フォームの送信内容をDiscordへ通知する。
+ *
+ * フォームのプラグインから、送信が済んだときに次のように呼ぶ。
+ *   do_action( 'dpn_form_submitted', 'フォーム名', array( '項目名' => '値', ... ) );
+ * Contact Form 7 から通知するつなぎ方は README を参照。
  */
-function dpn_notify_discord_on_cf7_submit( $contact_form ) {
+function dpn_notify_discord_on_form_submit( $form_title, $fields ) {
 	if ( empty( dpn_discord_get_webhook_urls( 'cf7' ) ) ) {
 		return;
 	}
 
-	if ( ! class_exists( 'WPCF7_Submission' ) ) {
-		return;
-	}
-
-	$submission = WPCF7_Submission::get_instance();
-	if ( ! $submission ) {
-		return;
-	}
-
-	$posted_data = $submission->get_posted_data();
-	$lines       = array();
-	foreach ( $posted_data as $key => $value ) {
-		// "_wpcf7"等の内部メタ項目は除外し、実際にユーザーが入力した項目のみ通知する。
-		if ( strpos( $key, '_' ) === 0 ) {
-			continue;
-		}
+	$lines = array();
+	foreach ( (array) $fields as $label => $value ) {
 		if ( is_array( $value ) ) {
 			$value = implode( ', ', $value );
 		}
-		$lines[] = sprintf( '**%s**: %s', $key, $value );
+		$value = (string) $value;
+		// 複数行の値(本文など)は項目名の次の行から書く
+		$lines[] = strpos( $value, "\n" ) !== false
+			? sprintf( "**%s**:\n%s", $label, $value )
+			: sprintf( '**%s**: %s', $label, $value );
 	}
 
 	$message = sprintf(
-		"お問い合わせフォームが送信されました。(%s)\n%s",
-		$contact_form->title(),
+		"フォームが送信されました。(%s)\n%s",
+		$form_title,
 		implode( "\n", $lines )
 	);
 
 	dpn_discord_send_message( $message, 'cf7' );
 }
-add_action( 'wpcf7_mail_sent', 'dpn_notify_discord_on_cf7_submit' );
+add_action( 'dpn_form_submitted', 'dpn_notify_discord_on_form_submit', 10, 2 );
 
 /**
  * コメントが投稿されたときにDiscordへ通知する。

@@ -3,7 +3,7 @@
 WordPress で次のことが起きたときに、Discord の Webhook へ通知を送るプラグインです。
 
 - 新しい投稿を公開したとき
-- Contact Form 7 のフォームが送信されたとき
+- フォームが送信されたとき（下のフックを呼ぶフォーム。[Contact Inbox](https://github.com/donnma777/wp-contact-inbox) は対応済み）
 - コメントが投稿されたとき（スパム・ゴミ箱は除く）
 
 ## 特長
@@ -21,6 +21,37 @@ WordPress で次のことが起きたときに、Discord の Webhook へ通知�
 
 Webhook URL は、Discord のチャンネル設定 →「連携サービス」→「ウェブフック」から発行できます。
 
+### フォームから通知する
+
+送信が済んだところで次のフックを呼ぶと、「フォーム送信」の送り先に通知されます。値に改行があれば、項目名の次の行から書きます。
+
+```php
+do_action( 'dpn_form_submitted', 'お問い合わせ', array(
+	'お名前'         => $name,
+	'メッセージ本文' => $body,
+) );
+```
+
+### Contact Form 7 から通知する
+
+2.x までは Contact Form 7 に対応していましたが、3.0.0 で外しました。続けて使う場合は、テーマの `functions.php` などに次を書いてください。
+
+```php
+add_action( 'wpcf7_mail_sent', function ( $form ) {
+	$submission = WPCF7_Submission::get_instance();
+	if ( ! $submission ) {
+		return;
+	}
+	$fields = array();
+	foreach ( $submission->get_posted_data() as $key => $value ) {
+		if ( strpos( $key, '_' ) !== 0 ) {
+			$fields[ $key ] = $value;
+		}
+	}
+	do_action( 'dpn_form_submitted', $form->title(), $fields );
+} );
+```
+
 ### wp-config.php で指定する（任意）
 
 `wp-config.php` に次を書くと、管理画面の設定より優先して、全用途がこの URL に送られます。
@@ -33,7 +64,6 @@ define( 'DISCORD_WEBHOOK_URL', 'https://discord.com/api/webhooks/xxxx/yyyy' );
 
 - WordPress 6.0 以上
 - PHP 7.4 以上
-- フォーム通知を使う場合は Contact Form 7
 
 ## 注意
 
