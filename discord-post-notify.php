@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Discord Post Notify
  * Description: 新規投稿の公開・フォームの送信・コメント投稿・ログイン時にDiscordのWebhookへ通知を送信します。
- * Version: 3.1.0
+ * Version: 3.1.1
  * Author: donnma
  * Author URI: https://donnma.com/
  * Plugin URI: https://github.com/donnma777/discord-post-notify
@@ -110,6 +110,40 @@ function dpn_discord_option_to_urls( $option_key ) {
 }
 
 /**
+ * 設定画面の欄の名前('' はデフォルト)。
+ */
+function dpn_discord_channel_labels() {
+	return array(
+		''        => 'デフォルト',
+		'post'    => '新規投稿公開',
+		'cf7'     => 'フォーム送信',
+		'comment' => 'コメント投稿',
+		'login'   => 'ログイン',
+	);
+}
+
+/**
+ * 欄のオプションキー('' はデフォルト)。
+ */
+function dpn_discord_channel_option_key( $channel ) {
+	$keys = dpn_discord_channel_option_keys();
+	return '' === $channel ? DPN_DISCORD_OPTION_KEY : $keys[ $channel ];
+}
+
+/**
+ * その欄にURLが保存してあれば「この欄にテスト送信」を出す。
+ */
+function dpn_discord_render_test_button( $channel ) {
+	if ( empty( dpn_discord_option_to_urls( dpn_discord_channel_option_key( $channel ) ) ) ) {
+		return;
+	}
+	printf(
+		'<p><button type="submit" form="dpn-discord-test" name="dpn_discord_channel" value="%s" class="button button-small">この欄にテスト送信</button></p>',
+		esc_attr( $channel )
+	);
+}
+
+/**
  * 設定画面を出力する。
  */
 function dpn_discord_render_settings_page() {
@@ -117,12 +151,7 @@ function dpn_discord_render_settings_page() {
 		return;
 	}
 
-	$channel_labels = array(
-		'post'    => '新規投稿公開',
-		'cf7'     => 'フォーム送信',
-		'comment' => 'コメント投稿',
-		'login'   => 'ログイン',
-	);
+	$channel_labels = dpn_discord_channel_labels();
 	?>
 	<div class="wrap">
 		<h1>Discord通知設定</h1>
@@ -144,6 +173,7 @@ function dpn_discord_render_settings_page() {
 							rows="3"
 							placeholder="https://discord.com/api/webhooks/xxxx/yyyy&#10;https://discord.com/api/webhooks/zzzz/wwww"
 						><?php echo esc_textarea( get_option( DPN_DISCORD_OPTION_KEY, '' ) ); ?></textarea>
+						<?php dpn_discord_render_test_button( '' ); ?>
 						<p class="description">用途別URLが未設定の場合にここへ通知されます。1行1URLで複数指定可能。Discordのチャンネル設定 → 連携サービス → ウェブフック から発行できます。</p>
 					</td>
 				</tr>
@@ -160,6 +190,7 @@ function dpn_discord_render_settings_page() {
 								rows="3"
 								placeholder="<?php echo 'login' === $channel ? '未設定時は送りません(1行1URLで複数指定可能)' : '未設定時はデフォルトURLを使用(1行1URLで複数指定可能)'; ?>"
 							><?php echo esc_textarea( get_option( $option_key, '' ) ); ?></textarea>
+							<?php dpn_discord_render_test_button( $channel ); ?>
 							<?php if ( 'login' === $channel ) : ?>
 								<p class="description">ログイン画面からだれかが入ったときに、ユーザー・権限・IP・ブラウザを送ります。IPが載るので、関係者だけのチャンネルにしてください。この欄が空なら送りません(デフォルトURLや wp-config.php の DISCORD_WEBHOOK_URL にも送りません)。</p>
 							<?php endif; ?>
@@ -169,16 +200,12 @@ function dpn_discord_render_settings_page() {
 			</table>
 			<?php submit_button( '保存' ); ?>
 		</form>
-		<?php if ( dpn_discord_get_webhook_urls() || dpn_discord_get_webhook_urls( 'login' ) ) : ?>
-			<hr />
-			<h2>テスト送信</h2>
-			<p>デフォルトURLとログイン用URL(1行1URLすべて)へテストメッセージを送信します。</p>
-			<form method="post">
-				<?php wp_nonce_field( 'dpn_discord_test_send' ); ?>
-				<input type="hidden" name="dpn_discord_test" value="1" />
-				<?php submit_button( 'テストメッセージを送信', 'secondary' ); ?>
-			</form>
-		<?php endif; ?>
+		<?php // 各欄の「この欄にテスト送信」が送るフォーム(設定のフォームの中には置けないので、外に置いて form 属性で結ぶ) ?>
+		<form id="dpn-discord-test" method="post">
+			<?php wp_nonce_field( 'dpn_discord_test_send' ); ?>
+			<input type="hidden" name="dpn_discord_test" value="1" />
+		</form>
+		<p class="description">「この欄にテスト送信」は、保存してあるURLへ送ります。書き換えたときは、先に保存してください。</p>
 	</div>
 	<?php
 }
@@ -192,17 +219,27 @@ function dpn_discord_handle_test_send() {
 	}
 	check_admin_referer( 'dpn_discord_test_send' );
 
-	$site = wp_specialchars_decode( get_bloginfo( 'name' ), ENT_QUOTES );
-	if ( ! empty( dpn_discord_get_webhook_urls() ) || ! empty( dpn_discord_get_webhook_urls( 'login' ) ) ) {
-		dpn_discord_send_message( sprintf( '%s: テスト通知です。この設定は正しく動作しています。', $site ) );
-		dpn_discord_send_message( sprintf( '%s: テスト通知です。このチャンネルにはログインを通知します。', $site ), 'login' );
-		add_action(
-			'admin_notices',
-			function () {
-				echo '<div class="notice notice-success"><p>テストメッセージを送信しました。Discordを確認してください。</p></div>';
-			}
-		);
+	$labels  = dpn_discord_channel_labels();
+	$channel = isset( $_POST['dpn_discord_channel'] ) ? sanitize_key( wp_unslash( $_POST['dpn_discord_channel'] ) ) : '';
+	if ( ! isset( $labels[ $channel ] ) ) {
+		return;
 	}
+	$urls = dpn_discord_option_to_urls( dpn_discord_channel_option_key( $channel ) );
+	if ( empty( $urls ) ) {
+		return;
+	}
+
+	$message = sprintf( '%s: 「%s」の欄のテスト通知です。', wp_specialchars_decode( get_bloginfo( 'name' ), ENT_QUOTES ), $labels[ $channel ] );
+	foreach ( $urls as $url ) {
+		dpn_discord_post_to( $url, $message, 10 );
+	}
+	$notice = sprintf( '「%s」の欄の %d か所へテストメッセージを送信しました。Discordを確認してください。', $labels[ $channel ], count( $urls ) );
+	add_action(
+		'admin_notices',
+		function () use ( $notice ) {
+			echo '<div class="notice notice-success"><p>' . esc_html( $notice ) . '</p></div>';
+		}
+	);
 }
 add_action( 'admin_init', 'dpn_discord_handle_test_send' );
 
@@ -247,21 +284,28 @@ function dpn_discord_send_message( $message, $channel = '', $timeout = 10 ) {
 	}
 
 	foreach ( $urls as $url ) {
-		wp_remote_post(
-			$url,
-			array(
-				'headers' => array( 'Content-Type' => 'application/json' ),
-				'body'    => wp_json_encode(
-					array(
-						'content'          => $message,
-						// 本文に @everyone / @here / <@id> があっても通知しない(フォームやコメントは外部の人が書けるため)
-						'allowed_mentions' => array( 'parse' => array() ),
-					)
-				),
-				'timeout' => $timeout,
-			)
-		);
+		dpn_discord_post_to( $url, $message, $timeout );
 	}
+}
+
+/**
+ * 1つのWebhookへ送る。
+ */
+function dpn_discord_post_to( $url, $message, $timeout ) {
+	wp_remote_post(
+		$url,
+		array(
+			'headers' => array( 'Content-Type' => 'application/json' ),
+			'body'    => wp_json_encode(
+				array(
+					'content'          => $message,
+					// 本文に @everyone / @here / <@id> があっても通知しない(フォームやコメントは外部の人が書けるため)
+					'allowed_mentions' => array( 'parse' => array() ),
+				)
+			),
+			'timeout' => $timeout,
+		)
+	);
 }
 
 /**

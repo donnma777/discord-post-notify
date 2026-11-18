@@ -18,7 +18,7 @@ WordPress で次のことが起きたときに、Discord の Webhook へ通知�
 
 1. [Releases](https://github.com/donnma777/discord-post-notify/releases) から Source code (zip) をダウンロード
 2. WordPress の管理画面「プラグイン → 新規追加 → プラグインのアップロード」で zip を選び、有効化
-3. 「設定 → Discord通知」で Webhook URL を入れて保存し、テスト送信で確認
+3. 「設定 → Discord通知」で Webhook URL を入れて保存し、各欄の「この欄にテスト送信」で確認
 
 Webhook URL は、Discord のチャンネル設定 →「連携サービス」→「ウェブフック」から発行できます。
 
