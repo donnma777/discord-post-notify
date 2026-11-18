@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Discord Post Notify
- * Description: 新規投稿の公開・フォームの送信・コメント投稿時にDiscordのWebhookへ通知を送信します。
- * Version: 3.0.0
+ * Description: 新規投稿の公開・フォームの送信・コメント投稿・ログイン時にDiscordのWebhookへ通知を送信します。
+ * Version: 3.1.0
  * Author: donnma
  * Author URI: https://donnma.com/
  * Plugin URI: https://github.com/donnma777/discord-post-notify
@@ -23,12 +23,14 @@ define( 'DPN_PUBLISH_NOTICE_DELAY', 60 );
  * 用途ごとのWebhook URLオプションキー。
  * 各項目は複数URL(改行区切り)を保持でき、空であれば DPN_DISCORD_OPTION_KEY(デフォルト)にフォールバックする。
  * 'cf7' はフォームの送信に使う(Contact Form 7 用だったころの設定を引き継ぐため名前はそのまま)。
+ * 'login' だけはフォールバックしない(IPが載るので、入れたときだけ送る)。
  */
 function dpn_discord_channel_option_keys() {
 	return array(
 		'post'    => 'dpn_discord_webhook_url_post',
 		'cf7'     => 'dpn_discord_webhook_url_cf7',
 		'comment' => 'dpn_discord_webhook_url_comment',
+		'login'   => 'dpn_discord_webhook_url_login',
 	);
 }
 
@@ -119,13 +121,14 @@ function dpn_discord_render_settings_page() {
 		'post'    => '新規投稿公開',
 		'cf7'     => 'フォーム送信',
 		'comment' => 'コメント投稿',
+		'login'   => 'ログイン',
 	);
 	?>
 	<div class="wrap">
 		<h1>Discord通知設定</h1>
 		<p>新規投稿の公開時、フォームの送信時、コメント投稿時に通知を送るDiscordのWebhook URLを設定します。<br />
 		1行に1つずつ入力すると、複数のDiscordサーバー/チャンネルへ同時に通知できます。<br />
-		用途別URLを空欄にすると、その用途はデフォルトURLへ通知されます。</p>
+		用途別URLを空欄にすると、その用途はデフォルトURLへ通知されます(ログインは除く)。</p>
 		<form method="post" action="options.php">
 			<?php settings_fields( 'dpn_discord_settings_group' ); ?>
 			<table class="form-table">
@@ -155,18 +158,21 @@ function dpn_discord_render_settings_page() {
 								name="<?php echo esc_attr( $option_key ); ?>"
 								class="large-text code"
 								rows="3"
-								placeholder="未設定時はデフォルトURLを使用(1行1URLで複数指定可能)"
+								placeholder="<?php echo 'login' === $channel ? '未設定時は送りません(1行1URLで複数指定可能)' : '未設定時はデフォルトURLを使用(1行1URLで複数指定可能)'; ?>"
 							><?php echo esc_textarea( get_option( $option_key, '' ) ); ?></textarea>
+							<?php if ( 'login' === $channel ) : ?>
+								<p class="description">ログイン画面からだれかが入ったときに、ユーザー・権限・IP・ブラウザを送ります。IPが載るので、関係者だけのチャンネルにしてください。この欄が空なら送りません(デフォルトURLや wp-config.php の DISCORD_WEBHOOK_URL にも送りません)。</p>
+							<?php endif; ?>
 						</td>
 					</tr>
 				<?php endforeach; ?>
 			</table>
 			<?php submit_button( '保存' ); ?>
 		</form>
-		<?php if ( get_option( DPN_DISCORD_OPTION_KEY, '' ) ) : ?>
+		<?php if ( dpn_discord_get_webhook_urls() || dpn_discord_get_webhook_urls( 'login' ) ) : ?>
 			<hr />
 			<h2>テスト送信</h2>
-			<p>デフォルトURL(1行1URLすべて)へテストメッセージを送信します。</p>
+			<p>デフォルトURLとログイン用URL(1行1URLすべて)へテストメッセージを送信します。</p>
 			<form method="post">
 				<?php wp_nonce_field( 'dpn_discord_test_send' ); ?>
 				<input type="hidden" name="dpn_discord_test" value="1" />
@@ -186,8 +192,10 @@ function dpn_discord_handle_test_send() {
 	}
 	check_admin_referer( 'dpn_discord_test_send' );
 
-	if ( ! empty( dpn_discord_get_webhook_urls() ) ) {
-		dpn_discord_send_message( sprintf( '%s: テスト通知です。この設定は正しく動作しています。', wp_specialchars_decode( get_bloginfo( 'name' ), ENT_QUOTES ) ) );
+	$site = wp_specialchars_decode( get_bloginfo( 'name' ), ENT_QUOTES );
+	if ( ! empty( dpn_discord_get_webhook_urls() ) || ! empty( dpn_discord_get_webhook_urls( 'login' ) ) ) {
+		dpn_discord_send_message( sprintf( '%s: テスト通知です。この設定は正しく動作しています。', $site ) );
+		dpn_discord_send_message( sprintf( '%s: テスト通知です。このチャンネルにはログインを通知します。', $site ), 'login' );
 		add_action(
 			'admin_notices',
 			function () {
@@ -201,14 +209,19 @@ add_action( 'admin_init', 'dpn_discord_handle_test_send' );
 /**
  * Webhook URLの配列を取得する。
  * $channel を指定すると用途別URL('post'/'cf7'/'comment')を優先し、未設定ならデフォルトURLにフォールバックする。
- * wp-config.phpでDISCORD_WEBHOOK_URLが定義されている場合は、全用途に対して常にそちらを最優先する(上級者向け)。
+ * wp-config.phpでDISCORD_WEBHOOK_URLが定義されている場合は、ログイン以外の全用途に対して常にそちらを最優先する(上級者向け)。
+ * ログインは用途別URLだけを使う(未設定なら空)。
  */
 function dpn_discord_get_webhook_urls( $channel = '' ) {
+	$channel_keys = dpn_discord_channel_option_keys();
+	if ( 'login' === $channel ) {
+		return dpn_discord_option_to_urls( $channel_keys['login'] );
+	}
+
 	if ( defined( 'DISCORD_WEBHOOK_URL' ) && DISCORD_WEBHOOK_URL !== '' ) {
 		return array( DISCORD_WEBHOOK_URL );
 	}
 
-	$channel_keys = dpn_discord_channel_option_keys();
 	if ( $channel !== '' && isset( $channel_keys[ $channel ] ) ) {
 		$channel_urls = dpn_discord_option_to_urls( $channel_keys[ $channel ] );
 		if ( ! empty( $channel_urls ) ) {
@@ -223,7 +236,7 @@ function dpn_discord_get_webhook_urls( $channel = '' ) {
  * Discordへメッセージを送信する共通処理。対象URLすべてに同じ内容を送る。
  * Discordの1メッセージあたりの文字数上限(2000文字)を考慮して安全に切り詰める。
  */
-function dpn_discord_send_message( $message, $channel = '' ) {
+function dpn_discord_send_message( $message, $channel = '', $timeout = 10 ) {
 	$urls = dpn_discord_get_webhook_urls( $channel );
 	if ( empty( $urls ) ) {
 		return;
@@ -245,7 +258,7 @@ function dpn_discord_send_message( $message, $channel = '' ) {
 						'allowed_mentions' => array( 'parse' => array() ),
 					)
 				),
-				'timeout' => 10,
+				'timeout' => $timeout,
 			)
 		);
 	}
@@ -359,3 +372,39 @@ function dpn_notify_discord_on_comment( $comment_id, $comment ) {
 	dpn_discord_send_message( $message, 'comment' );
 }
 add_action( 'wp_insert_comment', 'dpn_notify_discord_on_comment', 10, 2 );
+
+/**
+ * ログインしたときにDiscordへ通知する(ログイン画面から入ったとき。ログインしたままの再訪問では送らない)。
+ * 2段階認証のプラグインが先に止めて、認証のあとで wp_login をもう一度呼ぶ場合は、そのときに送られる。
+ * ログインを待たせないよう、Discordの応答は短く待つ。
+ */
+function dpn_notify_discord_on_login( $user_login, $user ) {
+	if ( empty( dpn_discord_get_webhook_urls( 'login' ) ) || ! ( $user instanceof WP_User ) ) {
+		return;
+	}
+
+	$names = wp_roles()->get_names();
+	$roles = array();
+	foreach ( (array) $user->roles as $role ) {
+		$roles[] = isset( $names[ $role ] ) ? translate_user_role( $names[ $role ] ) : $role;
+	}
+	$ip = isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : '';
+	$ua = isset( $_SERVER['HTTP_USER_AGENT'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) ) : '';
+	if ( function_exists( 'mb_strlen' ) && mb_strlen( $ua ) > 200 ) {
+		$ua = mb_substr( $ua, 0, 200 ) . '…';
+	}
+
+	$message = sprintf(
+		"%s: ログインがありました。\nユーザー: %s(%s)\n権限: %s\nIP: %s\nブラウザ: %s\n日時: %s",
+		wp_specialchars_decode( get_bloginfo( 'name' ), ENT_QUOTES ),
+		$user->display_name,
+		$user_login,
+		$roles ? implode( '・', $roles ) : 'なし',
+		$ip !== '' ? $ip : '不明',
+		$ua !== '' ? $ua : '不明',
+		wp_date( 'Y-m-d H:i:s' )
+	);
+
+	dpn_discord_send_message( $message, 'login', 5 );
+}
+add_action( 'wp_login', 'dpn_notify_discord_on_login', 10, 2 );

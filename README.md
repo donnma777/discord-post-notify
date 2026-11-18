@@ -5,10 +5,11 @@ WordPress で次のことが起きたときに、Discord の Webhook へ通知�
 - 新しい投稿を公開したとき
 - フォームが送信されたとき（下のフックを呼ぶフォーム。[Contact Inbox](https://github.com/donnma777/wp-contact-inbox) は対応済み）
 - コメントが投稿されたとき（スパム・ゴミ箱は除く）
+- ログイン画面からだれかがログインしたとき（ユーザー・権限・IP・ブラウザ。ログイン用の URL を入れたときだけ）
 
 ## 特長
 
-- 用途ごと（投稿・フォーム・コメント）に送り先の Webhook URL を分けられます。空欄の用途はデフォルトの URL に送ります
+- 用途ごと（投稿・フォーム・コメント・ログイン）に送り先の Webhook URL を分けられます。空欄の用途はデフォルトの URL に送ります（ログインは空欄なら送りません。IP が載るので、関係者だけのチャンネルにしてください）
 - 1行に1つずつ書けば、複数のサーバー・チャンネルへ同時に送れます
 - フォームやコメントの本文に `@everyone` / `@here` / `<@ユーザーID>` が書かれていても、Discord でメンション通知は飛びません
 - Discord の文字数上限に合わせて、長い本文は切り詰めます
@@ -54,7 +55,7 @@ add_action( 'wpcf7_mail_sent', function ( $form ) {
 
 ### wp-config.php で指定する（任意）
 
-`wp-config.php` に次を書くと、管理画面の設定より優先して、全用途がこの URL に送られます。
+`wp-config.php` に次を書くと、管理画面の設定より優先して、ログイン以外の全用途がこの URL に送られます。
 
 ```php
 define( 'DISCORD_WEBHOOK_URL', 'https://discord.com/api/webhooks/xxxx/yyyy' );
